@@ -16,7 +16,8 @@ for key in sorted(groups):
     label, dev, p, n, kv = key
     rs = groups[key]
     shas = {r["output_sha"] for r in rs}
-    ref = groups.get((label, dev, p, n, "false"))
+    # Reference: no-cache runs for the same device/prompt/length in any file.
+    ref = [r for k, rs2 in groups.items() if k[1:] == (dev, p, n, "false") for r in rs2]
     same = "n/a" if not ref or kv == "false" else ("yes" if shas == {r["output_sha"] for r in ref} else "NO")
     print(f"| {label} | {dev} | {p} | {n} | {kv} | {med(rs,'decode_tok_s'):.1f} | {med(rs,'total_tok_s'):.1f} "
           f"| {med(rs,'ttft_ms'):.0f} | {med(rs,'total_ms'):.0f} | {same} |")

@@ -1,0 +1,7 @@
+label,device,prompt,n,kv_cache,rep,prompt_tokens,new_tokens,ttft_ms,total_ms,decode_tok_s,total_tok_s,output_sha
+v2-prealloc-long,metal,0,900,true,1,6,900,53.5,12882.4,70.08,69.86,208432f975a6
+v2-prealloc-long,metal,0,900,true,2,6,900,52.2,12820.4,70.41,70.20,208432f975a6
+v2-prealloc-long,metal,0,900,true,3,6,900,53.7,12782.1,70.63,70.41,208432f975a6
+v2-prealloc-long,metal,1,900,true,1,13,900,48.4,12828.3,70.34,70.16,d82cb4cc63d3
+v2-prealloc-long,metal,1,900,true,2,13,900,52.9,13475.6,66.98,66.79,d82cb4cc63d3
+v2-prealloc-long,metal,1,900,true,3,13,900,55.1,13054.7,69.16,68.94,d82cb4cc63d3
