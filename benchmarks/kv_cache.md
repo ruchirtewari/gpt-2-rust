@@ -76,3 +76,28 @@ Candidates, roughly in order of expected benefit for short, simple queries:
 
 Variations 4–6 cannot change single-prompt, short-generation numbers, so the
 experiments below cover 1–3.
+
+## 3. Experiments
+
+All runs: Metal, greedy, median of 3 after a warm-up run; decode tok/s.
+
+### 3.1 Preallocated cache buffer: rejected
+
+`results/v2-prealloc.csv`, `results/v2-prealloc-long.csv`, `results/v1-long.csv`
+
+| new tokens | prompt | v1 (`Tensor::cat`) | preallocated | same output |
+|---|---|---|---|---|
+| 50  | 0 | 67.9 | 70.3 | yes |
+| 50  | 1 | 70.1 | 71.0 | yes |
+| 200 | 0 | 73.9 | 75.4 | yes |
+| 200 | 1 | 74.3 | 75.1 | yes |
+| 900 | 0 | 71.5 | 70.4 | yes |
+| 900 | 1 | 71.0 | 69.2 | yes |
+
+No measurable gain: at these lengths the copied history is a few MB per step,
+which is negligible next to per-kernel launch overhead. It also allocates the
+full 1024-position buffer (about 75 MB for GPT-2 small) for every generation,
+so it was reverted.
+
+For reference, at 900 new tokens the cache gives 3.1–3.4x over no cache
+(21–23 vs 71 tok/s), since the uncached cost grows with sequence length.

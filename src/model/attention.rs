@@ -87,27 +87,18 @@ impl<B: Backend> CausalSelfAttention<B> {
     /// Output tensor `[batch, t_new, n_embd]`
     pub fn forward_cached(&self, x: Tensor<B, 3>, cache: &mut LayerKvCache<B>) -> Tensor<B, 3> {
         let (q, k_new, v_new) = self.project_qkv(x);
-        let [batch, n_head, t_new, head_dim] = k_new.dims();
-        let past_len = cache.len;
-        let total = past_len + t_new;
+        let past_len = cache.len();
 
-        // Allocate the full-context buffers on first use, then write the new
-        // rows in place instead of re-concatenating the whole history.
-        let device = k_new.device();
-        let shape = [batch, n_head, self.max_seq_len, head_dim];
-        let k_buf = cache.k.take().unwrap_or_else(|| Tensor::zeros(shape, &device));
-        let v_buf = cache.v.take().unwrap_or_else(|| Tensor::zeros(shape, &device));
-        let rows = [0..batch, 0..n_head, past_len..total, 0..head_dim];
-        let k_buf = k_buf.slice_assign(rows.clone(), k_new);
-        let v_buf = v_buf.slice_assign(rows, v_new);
-
-        // Attend over the filled prefix only.
-        let filled = [0..batch, 0..n_head, 0..total, 0..head_dim];
-        let k = k_buf.clone().slice(filled.clone());
-        let v = v_buf.clone().slice(filled);
-        cache.k = Some(k_buf);
-        cache.v = Some(v_buf);
-        cache.len = total;
+        // Append the new keys/values along the sequence dimension (dim 2).
+        let (k, v) = match (cache.k.take(), cache.v.take()) {
+            (Some(k_past), Some(v_past)) => (
+                Tensor::cat(vec![k_past, k_new], 2),
+                Tensor::cat(vec![v_past, v_new], 2),
+            ),
+            _ => (k_new, v_new),
+        };
+        cache.k = Some(k.clone());
+        cache.v = Some(v.clone());
 
         self.attend(q, k, v, past_len)
     }
@@ -223,30 +214,28 @@ impl<B: Backend> CausalSelfAttention<B> {
 
 /// Cached keys and values for one attention layer.
 ///
-/// The buffers are preallocated to `[batch, n_head, max_seq_len, head_dim]` on
-/// first use; only the first `len` positions hold valid data.
+/// Both tensors have shape `[batch, n_head, cached_len, head_dim]`.
 #[derive(Debug, Clone)]
 pub struct LayerKvCache<B: Backend> {
     k: Option<Tensor<B, 4>>,
     v: Option<Tensor<B, 4>>,
-    len: usize,
 }
 
 impl<B: Backend> Default for LayerKvCache<B> {
     fn default() -> Self {
-        Self { k: None, v: None, len: 0 }
+        Self { k: None, v: None }
     }
 }
 
 impl<B: Backend> LayerKvCache<B> {
     /// Number of cached sequence positions.
     pub fn len(&self) -> usize {
-        self.len
+        self.k.as_ref().map_or(0, |k| k.dims()[2])
     }
 
     /// `true` when nothing has been cached yet.
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        self.k.is_none()
     }
 }
 
