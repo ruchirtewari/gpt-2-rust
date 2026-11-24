@@ -64,7 +64,7 @@ impl<B: Backend> CausalSelfAttention<B> {
         }
     }
 
-    /// Forward pass.
+    /// Forward pass (no caching) — used for training and full-sequence scoring.
     ///
     /// # Arguments
     /// - `x` — Input tensor `[batch, seq_len, n_embd]`
@@ -72,6 +72,39 @@ impl<B: Backend> CausalSelfAttention<B> {
     /// # Returns
     /// Output tensor `[batch, seq_len, n_embd]`
     pub fn forward(&self, x: Tensor<B, 3>) -> Tensor<B, 3> {
+        let (q, k, v) = self.project_qkv(x);
+        self.attend(q, k, v, 0)
+    }
+
+    /// Forward pass with a key/value cache, used for incremental decoding.
+    ///
+    /// `x` holds only the **new** tokens `[batch, t_new, n_embd]`. Their keys and
+    /// values are appended to `cache`, and the new queries attend over every
+    /// cached position plus themselves. On the first call pass an empty cache
+    /// (the "prefill" step); afterwards feed one token at a time.
+    ///
+    /// # Returns
+    /// Output tensor `[batch, t_new, n_embd]`
+    pub fn forward_cached(&self, x: Tensor<B, 3>, cache: &mut LayerKvCache<B>) -> Tensor<B, 3> {
+        let (q, k_new, v_new) = self.project_qkv(x);
+        let past_len = cache.len();
+
+        // Append the new keys/values along the sequence dimension (dim 2).
+        let (k, v) = match (cache.k.take(), cache.v.take()) {
+            (Some(k_past), Some(v_past)) => (
+                Tensor::cat(vec![k_past, k_new], 2),
+                Tensor::cat(vec![v_past, v_new], 2),
+            ),
+            _ => (k_new, v_new),
+        };
+        cache.k = Some(k.clone());
+        cache.v = Some(v.clone());
+
+        self.attend(q, k, v, past_len)
+    }
+
+    /// Project `x` to Q, K, V in multi-head form `[B, n_head, T, head_dim]`.
+    fn project_qkv(&self, x: Tensor<B, 3>) -> (Tensor<B, 4>, Tensor<B, 4>, Tensor<B, 4>) {
         let [batch, seq_len, _n_embd] = x.dims();
 
         // 1. Combined QKV projection
@@ -88,41 +121,54 @@ impl<B: Backend> CausalSelfAttention<B> {
 
         // 2. Reshape to multi-head form
         // [B, T, n_embd] → [B, T, n_head, head_dim] → [B, n_head, T, head_dim]
-        let q = q
-            .reshape([batch, seq_len, self.n_head, self.head_dim])
-            .swap_dims(1, 2); // [B, n_head, T, head_dim]
-        let k = k
-            .reshape([batch, seq_len, self.n_head, self.head_dim])
-            .swap_dims(1, 2);
-        let v = v
-            .reshape([batch, seq_len, self.n_head, self.head_dim])
-            .swap_dims(1, 2);
+        let split = |t: Tensor<B, 3>| {
+            t.reshape([batch, seq_len, self.n_head, self.head_dim])
+                .swap_dims(1, 2)
+        };
+        (split(q), split(k), split(v))
+    }
+
+    /// Scaled dot-product attention with a causal mask, then output projection.
+    ///
+    /// `q` covers query positions `offset .. offset + T_q`; `k`/`v` cover key
+    /// positions `0 .. T_k` (with `T_k = offset + T_q`).
+    fn attend(
+        &self,
+        q: Tensor<B, 4>,
+        k: Tensor<B, 4>,
+        v: Tensor<B, 4>,
+        offset: usize,
+    ) -> Tensor<B, 3> {
+        let [batch, _, q_len, _] = q.dims();
+        let k_len = k.dims()[2];
 
         // 3. Scaled dot-product attention + causal mask
-        // scores: [B, n_head, T, T]
+        // scores: [B, n_head, T_q, T_k]
         let scale = (self.head_dim as f64).sqrt();
-        // k^T: [B, n_head, head_dim, T]
-        let k_t = k.transpose();
-        let scores = q.matmul(k_t) / scale;
+        let scores = q.matmul(k.transpose()) / scale;
 
-        // Causal mask: upper triangle is -inf so future tokens are invisible.
-        // mask[i,j] = -inf if j > i
-        let mask = self.causal_mask(seq_len, &scores.device());
-        let scores = scores + mask;
+        // Causal mask: a query may not see keys from its future. With a single
+        // new query token every cached key is in its past, so no mask is needed.
+        let scores = if q_len > 1 {
+            let mask = self.causal_mask_offset(q_len, k_len, offset, &scores.device());
+            scores + mask
+        } else {
+            scores
+        };
 
         // Softmax over the last (key) dimension
-        let attn_weights = softmax(scores, 3); // [B, n_head, T, T]
+        let attn_weights = softmax(scores, 3); // [B, n_head, T_q, T_k]
         let attn_weights = self.attn_drop.forward(attn_weights);
 
         // Weighted sum of values
-        // [B, n_head, T, T] × [B, n_head, T, head_dim] → [B, n_head, T, head_dim]
+        // [B, n_head, T_q, T_k] × [B, n_head, T_k, head_dim] → [B, n_head, T_q, head_dim]
         let context = attn_weights.matmul(v);
 
         // 4. Re-assemble heads
-        // [B, n_head, T, head_dim] → [B, T, n_head, head_dim] → [B, T, n_embd]
+        // [B, n_head, T_q, head_dim] → [B, T_q, n_head, head_dim] → [B, T_q, n_embd]
         let context = context
             .swap_dims(1, 2)
-            .reshape([batch, seq_len, self.n_head * self.head_dim]);
+            .reshape([batch, q_len, self.n_head * self.head_dim]);
 
         // 5. Output projection
         let out = self.c_proj.forward(context);
@@ -133,22 +179,63 @@ impl<B: Backend> CausalSelfAttention<B> {
     ///
     /// Positions where `j > i` are set to `−∞` (–1e9 in f32 to avoid
     /// NaN in softmax with fp16).
+    #[cfg_attr(not(test), allow(dead_code))]
     fn causal_mask(&self, seq_len: usize, device: &B::Device) -> Tensor<B, 4> {
-        // Create index tensors [T]
-        let rows = Tensor::<B, 1, Int>::arange(0..(seq_len as i64), device)
-            .reshape([seq_len, 1]);
-        let cols = Tensor::<B, 1, Int>::arange(0..(seq_len as i64), device)
-            .reshape([1, seq_len]);
+        self.causal_mask_offset(seq_len, seq_len, 0, device)
+    }
+
+    /// Build a causal mask of shape `[1, 1, T_q, T_k]` for queries at absolute
+    /// positions `offset .. offset + T_q` against keys at `0 .. T_k`.
+    ///
+    /// `mask[i, j] = −1e9` when `j > offset + i`, otherwise `0`.
+    fn causal_mask_offset(
+        &self,
+        q_len: usize,
+        k_len: usize,
+        offset: usize,
+        device: &B::Device,
+    ) -> Tensor<B, 4> {
+        let rows = Tensor::<B, 1, Int>::arange(offset as i64..(offset + q_len) as i64, device)
+            .reshape([q_len, 1]);
+        let cols = Tensor::<B, 1, Int>::arange(0..(k_len as i64), device)
+            .reshape([1, k_len]);
 
         // Boolean mask: True where col > row (future positions)
-        let future_mask = cols.greater(rows); // [T, T]
+        let future_mask = cols.greater(rows); // [T_q, T_k]
 
         // Convert: True → -1e9, False → 0.0
-        let neg_inf = Tensor::<B, 2>::zeros([seq_len, seq_len], device);
-        let mask_2d = neg_inf.mask_fill(future_mask, -1e9_f32);
+        let mask_2d = Tensor::<B, 2>::zeros([q_len, k_len], device)
+            .mask_fill(future_mask, -1e9_f32);
 
-        // Expand to [1, 1, T, T] for broadcasting over batch and heads
+        // Expand to [1, 1, T_q, T_k] for broadcasting over batch and heads
         mask_2d.unsqueeze::<4>()
+    }
+}
+
+/// Cached keys and values for one attention layer.
+///
+/// Both tensors have shape `[batch, n_head, cached_len, head_dim]`.
+#[derive(Debug, Clone)]
+pub struct LayerKvCache<B: Backend> {
+    k: Option<Tensor<B, 4>>,
+    v: Option<Tensor<B, 4>>,
+}
+
+impl<B: Backend> Default for LayerKvCache<B> {
+    fn default() -> Self {
+        Self { k: None, v: None }
+    }
+}
+
+impl<B: Backend> LayerKvCache<B> {
+    /// Number of cached sequence positions.
+    pub fn len(&self) -> usize {
+        self.k.as_ref().map_or(0, |k| k.dims()[2])
+    }
+
+    /// `true` when nothing has been cached yet.
+    pub fn is_empty(&self) -> bool {
+        self.k.is_none()
     }
 }
 
@@ -188,5 +275,30 @@ mod tests {
         let attn = CausalSelfAttention::<B>::new(&cfg, &device);
         let mask = attn.causal_mask(8, &device);
         assert_eq!(mask.dims(), [1, 1, 8, 8]);
+    }
+
+    #[test]
+    fn test_cached_attention_matches_full() {
+        let device = Default::default();
+        let cfg = crate::config::Gpt2Config::new()
+            .with_n_embd(32)
+            .with_n_head(4)
+            .with_n_layer(1)
+            .with_max_seq_len(16)
+            .with_dropout(0.0);
+
+        let attn = CausalSelfAttention::<B>::new(&cfg, &device);
+        let x = Tensor::<B, 3>::random([2, 7, 32], burn::tensor::Distribution::Default, &device);
+        let full = attn.forward(x.clone());
+
+        // Prefill 4 tokens, then feed the remaining 3 one at a time.
+        let mut cache = LayerKvCache::default();
+        let mut parts = vec![attn.forward_cached(x.clone().slice([0..2, 0..4, 0..32]), &mut cache)];
+        for t in 4..7 {
+            parts.push(attn.forward_cached(x.clone().slice([0..2, t..t + 1, 0..32]), &mut cache));
+        }
+        assert_eq!(cache.len(), 7);
+        let cached = Tensor::cat(parts, 1);
+        cached.into_data().assert_approx_eq::<f32>(&full.into_data(), Default::default());
     }
 }

@@ -19,7 +19,7 @@ use std::path::Path;
 use std::process::Command;
 
 use gpt_2_rust::{
-    generate as run_autoregressive_generation, loader, training, GenerationConfig, Gpt2Config,
+    generate_with_stats, loader, training, GenerationConfig, Gpt2Config,
     Gpt2Model, Gpt2Tokenizer,
 };
 
@@ -90,6 +90,14 @@ struct Args {
     #[arg(long, default_value = "true")]
     stop_on_eot: bool,
 
+    /// Use the KV cache during generation (`--kv-cache false` to disable).
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    kv_cache: bool,
+
+    /// Print generation timing statistics to stderr.
+    #[arg(long, default_value = "false")]
+    stats: bool,
+
     /// Force overwrite of existing files (downloader mode).
     #[arg(long, default_value = "false")]
     force: bool,
@@ -134,8 +142,8 @@ struct Args {
     #[arg(long, default_value = "42")]
     seed: u64,
 
-    /// Execution device / backend to run on: 'cuda', 'wgpu', or 'cpu'.
-    #[arg(long, default_value = "cuda")]
+    /// Execution device / backend to run on: 'metal', 'cuda', 'wgpu', or 'cpu'.
+    #[arg(long, default_value = "metal")]
     device: String,
 }
 
@@ -317,13 +325,28 @@ fn run_generate_with_backend<B: Backend>(args: &Args, device: &B::Device) -> Res
         top_p:          if args.top_p > 0.0 { Some(args.top_p) } else { None },
         seed:           args.seed,
         stop_on_eot:    args.stop_on_eot,
+        use_kv_cache:   args.kv_cache,
     };
 
     print!("{}", args.prompt);
     use std::io::Write;
     let _ = std::io::stdout().flush();
 
-    let _output = run_autoregressive_generation::<B>(&model, &tokenizer, &args.prompt, &gen_cfg, device);
+    let (_output, stats) =
+        generate_with_stats::<B>(&model, &tokenizer, &args.prompt, &gen_cfg, device);
+
+    if args.stats {
+        eprintln!(
+            "\n[stats] kv_cache={} prompt_tokens={} new_tokens={} ttft_ms={:.1} total_ms={:.1} decode_tok_s={:.2} total_tok_s={:.2}",
+            gen_cfg.use_kv_cache,
+            stats.prompt_tokens,
+            stats.new_tokens,
+            stats.time_to_first_token.as_secs_f64() * 1e3,
+            stats.total_time.as_secs_f64() * 1e3,
+            stats.decode_tokens_per_sec(),
+            stats.total_tokens_per_sec(),
+        );
+    }
 
     std::mem::drop(model);
     println!();
@@ -340,6 +363,15 @@ fn run_generate(args: &Args) -> Result<()> {
             }
             #[cfg(not(feature = "cuda"))]
             anyhow::bail!("CUDA backend is not enabled. Compile with --features cuda.");
+        }
+        "metal" => {
+            #[cfg(feature = "metal")]
+            {
+                let device = burn::backend::wgpu::WgpuDevice::default();
+                run_generate_with_backend::<burn::backend::Metal<f32, i32>>(args, &device)?;
+            }
+            #[cfg(not(feature = "metal"))]
+            anyhow::bail!("Metal backend is not enabled. Compile with --features metal.");
         }
         "wgpu" => {
             #[cfg(feature = "wgpu")]
@@ -359,7 +391,7 @@ fn run_generate(args: &Args) -> Result<()> {
             #[cfg(not(feature = "ndarray"))]
             anyhow::bail!("NdArray (CPU) backend is not enabled. Compile with --features ndarray.");
         }
-        other => anyhow::bail!("Unsupported device '{}'. Choose: cuda, wgpu, cpu", other),
+        other => anyhow::bail!("Unsupported device '{}'. Choose: metal, cuda, wgpu, cpu", other),
     }
     Ok(())
 }
@@ -447,6 +479,15 @@ fn run_eval(args: &Args) -> Result<()> {
             #[cfg(not(feature = "cuda"))]
             anyhow::bail!("CUDA backend is not enabled. Compile with --features cuda.");
         }
+        "metal" => {
+            #[cfg(feature = "metal")]
+            {
+                let device = burn::backend::wgpu::WgpuDevice::default();
+                run_eval_with_backend::<burn::backend::Metal<f32, i32>>(args, &device)?;
+            }
+            #[cfg(not(feature = "metal"))]
+            anyhow::bail!("Metal backend is not enabled. Compile with --features metal.");
+        }
         "wgpu" => {
             #[cfg(feature = "wgpu")]
             {
@@ -465,7 +506,7 @@ fn run_eval(args: &Args) -> Result<()> {
             #[cfg(not(feature = "ndarray"))]
             anyhow::bail!("NdArray (CPU) backend is not enabled. Compile with --features ndarray.");
         }
-        other => anyhow::bail!("Unsupported device '{}'. Choose: cuda, wgpu, cpu", other),
+        other => anyhow::bail!("Unsupported device '{}'. Choose: metal, cuda, wgpu, cpu", other),
     }
     Ok(())
 }
@@ -510,6 +551,15 @@ fn run_train(args: &Args) -> Result<()> {
             #[cfg(not(feature = "cuda"))]
             anyhow::bail!("CUDA backend is not enabled. Compile with --features cuda.");
         }
+        "metal" => {
+            #[cfg(feature = "metal")]
+            {
+                let device = burn::backend::wgpu::WgpuDevice::default();
+                run_train_with_backend::<burn::backend::Autodiff<burn::backend::Metal<f32, i32>>>(args, &device)?;
+            }
+            #[cfg(not(feature = "metal"))]
+            anyhow::bail!("Metal backend is not enabled. Compile with --features metal.");
+        }
         "wgpu" => {
             #[cfg(feature = "wgpu")]
             {
@@ -528,7 +578,7 @@ fn run_train(args: &Args) -> Result<()> {
             #[cfg(not(feature = "ndarray"))]
             anyhow::bail!("NdArray (CPU) backend is not enabled. Compile with --features ndarray.");
         }
-        other => anyhow::bail!("Unsupported device '{}'. Choose: cuda, wgpu, cpu", other),
+        other => anyhow::bail!("Unsupported device '{}'. Choose: metal, cuda, wgpu, cpu", other),
     }
     Ok(())
 }

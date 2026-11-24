@@ -6,10 +6,14 @@
 //! - **Top-K** filtering
 //! - **Top-P** (nucleus) filtering
 //! - Early stopping on the EOT token
+//! - An optional **KV cache** (`use_kv_cache`) so each step only processes the
+//!   newest token instead of re-running the whole sequence
 
 use burn::prelude::*;
 
 use serde::{Deserialize, Serialize};
+
+use std::time::{Duration, Instant};
 
 use crate::model::Gpt2Model;
 use crate::tokenizer::{EOT_TOKEN, Gpt2Tokenizer};
@@ -39,6 +43,50 @@ pub struct GenerationConfig {
 
     /// Stop early when the EOT token is generated.
     pub stop_on_eot: bool,
+
+    /// Reuse cached attention keys/values between steps.
+    ///
+    /// With the cache on, the prompt is processed once ("prefill") and each
+    /// later step feeds only the newest token. With it off, every step re-runs
+    /// the model over the full sequence. Both produce the same tokens while the
+    /// sequence fits in the context window.
+    #[serde(default = "default_use_kv_cache")]
+    pub use_kv_cache: bool,
+}
+
+fn default_use_kv_cache() -> bool {
+    true
+}
+
+/// Timing information collected by [`generate_with_stats`].
+#[derive(Debug, Clone, Default)]
+pub struct GenerationStats {
+    /// Number of prompt tokens fed to the model.
+    pub prompt_tokens: usize,
+    /// Number of new tokens generated.
+    pub new_tokens: usize,
+    /// Time until the first new token was produced (includes the prompt prefill).
+    pub time_to_first_token: Duration,
+    /// Total wall-clock time of the generation loop.
+    pub total_time: Duration,
+}
+
+impl GenerationStats {
+    /// Throughput of the decode phase (tokens after the first), in tokens/second.
+    pub fn decode_tokens_per_sec(&self) -> f64 {
+        let decode = self.total_time.saturating_sub(self.time_to_first_token).as_secs_f64();
+        if self.new_tokens > 1 && decode > 0.0 {
+            (self.new_tokens - 1) as f64 / decode
+        } else {
+            0.0
+        }
+    }
+
+    /// End-to-end throughput, in new tokens/second.
+    pub fn total_tokens_per_sec(&self) -> f64 {
+        let total = self.total_time.as_secs_f64();
+        if total > 0.0 { self.new_tokens as f64 / total } else { 0.0 }
+    }
 }
 
 impl Default for GenerationConfig {
@@ -50,6 +98,7 @@ impl Default for GenerationConfig {
             top_p: None,
             seed: 42,
             stop_on_eot: true,
+            use_kv_cache: true,
         }
     }
 }
@@ -72,10 +121,21 @@ pub fn generate<B: Backend>(
     config: &GenerationConfig,
     device: &B::Device,
 ) -> String {
+    generate_with_stats(model, tokenizer, prompt, config, device).0
+}
+
+/// Like [`generate`], but also returns timing statistics.
+pub fn generate_with_stats<B: Backend>(
+    model: &Gpt2Model<B>,
+    tokenizer: &Gpt2Tokenizer,
+    prompt: &str,
+    config: &GenerationConfig,
+    device: &B::Device,
+) -> (String, GenerationStats) {
     use rand::{rngs::StdRng, SeedableRng};
 
-
     let mut rng = StdRng::seed_from_u64(config.seed);
+    let max_seq_len = model.max_seq_len();
 
     // Encode prompt
     let mut token_ids: Vec<u32> = tokenizer.encode(prompt);
@@ -84,18 +144,40 @@ pub fn generate<B: Backend>(
         token_ids.push(tokenizer.eot_token());
     }
 
-    // Autoregressive loop
-    for _ in 0..config.max_new_tokens {
-        // Build input tensor [1, T]
-        let ids_i64: Vec<i64> = token_ids.iter().map(|&t| t as i64).collect();
-        let input = Tensor::<B, 1, Int>::from_data(
-            TensorData::new(ids_i64, [token_ids.len()]),
-            device,
-        )
-        .unsqueeze::<2>(); // [1, T]
+    let mut stats = GenerationStats {
+        prompt_tokens: token_ids.len(),
+        ..Default::default()
+    };
+    let start = Instant::now();
 
+    let mut kv_cache = config.use_kv_cache.then(|| model.new_kv_cache());
+
+    // Autoregressive loop
+    for step in 0..config.max_new_tokens {
         // Forward pass — get logits for last position [1, vocab_size]
-        let logits = model.forward_last(input); // [1, V]
+        let logits = match kv_cache.as_mut() {
+            Some(cache) => {
+                if cache.len() >= max_seq_len {
+                    // Context window full: positions can't shift inside the cache,
+                    // so restart it from the most recent half-window of tokens.
+                    cache.clear();
+                }
+                // Feed only the tokens the cache has not seen. After a clear (or on
+                // the first step) this re-prefills from a window that fits.
+                let new_ids = if cache.is_empty() {
+                    let window = if step == 0 { max_seq_len } else { max_seq_len / 2 };
+                    &token_ids[token_ids.len().saturating_sub(window)..]
+                } else {
+                    &token_ids[token_ids.len() - 1..]
+                };
+                model.forward_cached(ids_to_tensor::<B>(new_ids, device), cache)
+            }
+            None => {
+                // Re-run the full (cropped) sequence every step.
+                let window = &token_ids[token_ids.len().saturating_sub(max_seq_len)..];
+                model.forward_last(ids_to_tensor::<B>(window, device))
+            }
+        };
 
         // Extract as f32 vec
         let mut logits_vec: Vec<f32> = logits
@@ -136,6 +218,11 @@ pub fn generate<B: Backend>(
             sample_from_logits(&logits_vec, &mut rng)
         };
 
+        if step == 0 {
+            stats.time_to_first_token = start.elapsed();
+        }
+        stats.new_tokens += 1;
+
         // Stream the token's text representation
         let token_text = tokenizer.decode(&[next_token]);
         print!("{}", token_text);
@@ -149,7 +236,15 @@ pub fn generate<B: Backend>(
         }
     }
 
-    tokenizer.decode(&token_ids)
+    stats.total_time = start.elapsed();
+    (tokenizer.decode(&token_ids), stats)
+}
+
+/// Build a `[1, T]` Int tensor from token ids.
+fn ids_to_tensor<B: Backend>(ids: &[u32], device: &B::Device) -> Tensor<B, 2, Int> {
+    let ids_i64: Vec<i64> = ids.iter().map(|&t| t as i64).collect();
+    Tensor::<B, 1, Int>::from_data(TensorData::new(ids_i64, [ids.len()]), device)
+        .unsqueeze::<2>()
 }
 
 // Sampling helpers
@@ -277,5 +372,56 @@ mod tests {
         let logits = vec![f32::NEG_INFINITY, f32::NEG_INFINITY, 100.0, f32::NEG_INFINITY];
         // Only index 2 has non-zero probability
         assert_eq!(sample_from_logits(&logits, &mut rng), 2);
+    }
+
+    fn tiny_model() -> crate::model::Gpt2Model<burn::backend::NdArray<f32>> {
+        // Real GPT-2 vocab so tokenizer ids are valid embedding indices.
+        let cfg = crate::config::Gpt2Config::new()
+            .with_vocab_size(50257)
+            .with_max_seq_len(16)
+            .with_n_embd(32)
+            .with_n_layer(2)
+            .with_n_head(4)
+            .with_dropout(0.0);
+        cfg.init(&Default::default())
+    }
+
+    fn cfg(use_kv_cache: bool, max_new_tokens: usize, temperature: f64) -> GenerationConfig {
+        GenerationConfig {
+            max_new_tokens,
+            temperature,
+            top_k: Some(20),
+            top_p: None,
+            seed: 7,
+            stop_on_eot: false,
+            use_kv_cache,
+        }
+    }
+
+    #[test]
+    fn test_kv_cache_matches_no_cache() {
+        let model = tiny_model();
+        let tok = Gpt2Tokenizer::new().unwrap();
+        let device = Default::default();
+        // Prompt is a few tokens; 8 new tokens stays within max_seq_len = 16.
+        for temperature in [0.0, 0.9] {
+            let (with, s1) = generate_with_stats(&model, &tok, "Hi", &cfg(true, 8, temperature), &device);
+            let (without, s2) = generate_with_stats(&model, &tok, "Hi", &cfg(false, 8, temperature), &device);
+            assert_eq!(with, without, "temperature {temperature}");
+            assert_eq!(s1.new_tokens, 8);
+            assert_eq!(s2.new_tokens, 8);
+        }
+    }
+
+    #[test]
+    fn test_generation_past_context_window() {
+        // 40 new tokens with max_seq_len = 16 must not panic in either mode.
+        let model = tiny_model();
+        let tok = Gpt2Tokenizer::new().unwrap();
+        let device = Default::default();
+        for use_kv_cache in [true, false] {
+            let (_, stats) = generate_with_stats(&model, &tok, "Hi", &cfg(use_kv_cache, 40, 0.0), &device);
+            assert_eq!(stats.new_tokens, 40);
+        }
     }
 }

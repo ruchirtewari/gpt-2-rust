@@ -1,0 +1,17 @@
+label,device,prompt,n,kv_cache,rep,prompt_tokens,new_tokens,ttft_ms,total_ms,decode_tok_s,total_tok_s,output_sha
+initial-cpu-wgpu,cpu,0,200,false,1,6,200,169.9,87414.6,2.28,2.29,fbbedaf7b1a4
+initial-cpu-wgpu,cpu,0,200,true,1,6,200,164.5,31528.5,6.34,6.34,fbbedaf7b1a4
+initial-cpu-wgpu,cpu,0,50,false,1,6,50,167.9,10962.6,4.54,4.56,d25ad9c105eb
+initial-cpu-wgpu,cpu,0,50,true,1,6,50,163.0,8255.4,6.06,6.06,d25ad9c105eb
+initial-cpu-wgpu,cpu,1,200,false,1,13,200,215.4,104325.0,1.91,1.92,bbe0c9d4e0ab
+initial-cpu-wgpu,cpu,1,200,true,1,13,200,242.4,36202.7,5.53,5.52,bbe0c9d4e0ab
+initial-cpu-wgpu,cpu,1,50,false,1,13,50,216.3,14000.8,3.55,3.57,45a0ce546875
+initial-cpu-wgpu,cpu,1,50,true,1,13,50,233.2,8961.3,5.61,5.58,45a0ce546875
+initial-cpu-wgpu,wgpu,0,200,false,1,6,200,111.9,10238.7,19.65,19.53,fbbedaf7b1a4
+initial-cpu-wgpu,wgpu,0,200,true,1,6,200,107.2,2953.2,69.92,67.72,fbbedaf7b1a4
+initial-cpu-wgpu,wgpu,0,50,false,1,6,50,422.0,3573.4,15.55,13.99,d25ad9c105eb
+initial-cpu-wgpu,wgpu,0,50,true,1,6,50,167.0,1200.0,47.43,41.67,d25ad9c105eb
+initial-cpu-wgpu,wgpu,1,200,false,1,13,200,155.7,9615.0,21.04,20.80,bbe0c9d4e0ab
+initial-cpu-wgpu,wgpu,1,200,true,1,13,200,66.7,2913.1,69.91,68.66,bbe0c9d4e0ab
+initial-cpu-wgpu,wgpu,1,50,false,1,13,50,155.9,2327.7,22.56,21.48,45a0ce546875
+initial-cpu-wgpu,wgpu,1,50,true,1,13,50,107.5,841.2,66.78,59.44,45a0ce546875

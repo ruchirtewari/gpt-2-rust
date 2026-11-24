@@ -29,7 +29,8 @@ Built using the [Burn deep-learning framework](https://burn.dev), it includes:
 - ✅ **Pure-Rust BPE Tokenizer:** Fast `tiktoken-rs` wrapper using GPT-2's vocabulary.
 - ✅ **Real-Time Word Streaming:** Outputs newly generated words instantly to the console.
 - ✅ **GPU Model Weight Offloading:** Automatically drops weights from GPU VRAM immediately after inference finishes.
-- ✅ **CUDA Execution:** GPU-accelerated by default using native Rust CUDA support (via CubeCL/cudarc) across Windows and Linux.
+- ✅ **KV Cache:** Generation reuses cached attention keys/values, so each step processes only the newest token (about 3x faster for 200-token outputs; see `benchmarks/kv_cache.md`).
+- ✅ **Metal by Default:** GPU-accelerated on Apple Silicon through Burn's native Metal backend. CUDA is available with `--features cuda` on Windows and Linux.
 - ✅ **Single CLI Entry Point:** Reuses dependencies and compiles quickly into a single main executable.
 
 ---
@@ -47,7 +48,9 @@ Built using the [Burn deep-learning framework](https://burn.dev), it includes:
 
 ## Command-Line Interface (CLI) Usages
 
-Everything compiles into a single, unified binary. Choose the operation mode using the flags:
+Everything compiles into a single, unified binary. Choose the operation mode using the flags.
+
+The default build enables the `metal` and `ndarray` (CPU) backends. On Windows or Linux, build with `--no-default-features --features cuda,ndarray` (or `wgpu,ndarray`).
 
 ### 1. Download Model Parameters (`--download`)
 Downloads safetensors weights, model configurations, and vocabulary mapping for all variants from Hugging Face:
@@ -77,7 +80,9 @@ cargo run --release -- --generate --model weights/small/model.safetensors --prom
   * `--top-k <N>`: Top-K cutoff value (0 to disable).
   * `--top-p <F>`: Top-P (nucleus) value (0.0 to disable).
   * `--seed <N>`: Random seed for reproducibility.
-  * `--device <cuda|wgpu|cpu>`: Compute backend device (default is `cuda`).
+  * `--kv-cache <true|false>`: Reuse cached attention keys/values between steps (default `true`).
+  * `--stats`: Print timing statistics (time to first token, tokens/second) to stderr.
+  * `--device <metal|cuda|wgpu|cpu>`: Compute backend device (default is `metal`).
 
 ### 3. Evaluate Perplexity (`--evaluate`)
 Evaluates cross-entropy loss and perplexity on a test dataset:
@@ -90,7 +95,7 @@ cargo run --release -- --evaluate --model weights/small/model.safetensors --form
   * `--data <path>`: Path to validation dataset file.
   * `--seq-len <N>`: Sliding window sequence length.
   * `--batch-size <N>`: Evaluation batch size.
-  * `--device <cuda|wgpu|cpu>`: Compute backend device (default is `cuda`).
+  * `--device <metal|cuda|wgpu|cpu>`: Compute backend device (default is `metal`).
 
 ### 4. Pre-Train or Fine-Tune (`--train`)
 Performs pre-training or fine-tuning from scratch:
@@ -103,7 +108,7 @@ cargo run --release -- --train --data data/input.txt --artifact-dir artifacts/ -
   * `--epochs <N>`: Number of training epochs.
   * `--lr <F>`: AdamW peak learning rate.
   * `--dropout <F>`: Dropout probability.
-  * `--device <cuda|wgpu|cpu>`: Compute backend device (default is `cuda`).
+  * `--device <metal|cuda|wgpu|cpu>`: Compute backend device (default is `metal`).
 
 ---
 

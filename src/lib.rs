@@ -34,6 +34,6 @@ pub mod training;
 
 // Re-export the most commonly used types at the crate root.
 pub use config::Gpt2Config;
-pub use generate::{generate, GenerationConfig};
-pub use model::Gpt2Model;
+pub use generate::{generate, generate_with_stats, GenerationConfig, GenerationStats};
+pub use model::{Gpt2Model, KvCache};
 pub use tokenizer::Gpt2Tokenizer;

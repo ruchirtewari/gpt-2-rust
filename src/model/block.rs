@@ -13,7 +13,10 @@ use burn::{
 
 use crate::{
     config::Gpt2Config,
-    model::{attention::CausalSelfAttention, mlp::Mlp},
+    model::{
+        attention::{CausalSelfAttention, LayerKvCache},
+        mlp::Mlp,
+    },
 };
 
 /// A single GPT-2 transformer block (pre-norm, residual attention + MLP).
@@ -60,6 +63,21 @@ impl<B: Backend> TransformerBlock<B> {
         let x = residual + x;
 
         // MLP with pre-norm and residual
+        let residual = x.clone();
+        let x = self.ln_2.forward(x);
+        let x = self.mlp.forward(x);
+        residual + x
+    }
+
+    /// Forward pass over only the new tokens, reading and extending `cache`.
+    ///
+    /// See [`CausalSelfAttention::forward_cached`].
+    pub fn forward_cached(&self, x: Tensor<B, 3>, cache: &mut LayerKvCache<B>) -> Tensor<B, 3> {
+        let residual = x.clone();
+        let x = self.ln_1.forward(x);
+        let x = self.attn.forward_cached(x, cache);
+        let x = residual + x;
+
         let residual = x.clone();
         let x = self.ln_2.forward(x);
         let x = self.mlp.forward(x);
