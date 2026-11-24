@@ -344,4 +344,31 @@ mod tests {
         let cached = Tensor::cat(parts, 1);
         cached.into_data().assert_approx_eq::<f32>(&full.into_data(), Default::default());
     }
+
+    #[test]
+    fn test_cached_attention_across_buckets() {
+        // Prefill 60 positions, then step one at a time past the 64 and 128
+        // bucket boundaries, comparing against the uncached pass.
+        let device = Default::default();
+        let cfg = crate::config::Gpt2Config::new()
+            .with_n_embd(32)
+            .with_n_head(4)
+            .with_n_layer(1)
+            .with_max_seq_len(160)
+            .with_dropout(0.0);
+
+        let attn = CausalSelfAttention::<B>::new(&cfg, &device);
+        let x = Tensor::<B, 3>::random([1, 140, 32], burn::tensor::Distribution::Default, &device);
+        let full = attn.forward(x.clone());
+
+        let mut cache = LayerKvCache::default();
+        let mut parts = vec![attn.forward_cached(x.clone().slice([0..1, 0..60, 0..32]), &mut cache)];
+        for t in 60..140 {
+            parts.push(attn.forward_cached(x.clone().slice([0..1, t..t + 1, 0..32]), &mut cache));
+        }
+        assert_eq!(cache.len(), 140);
+        assert_eq!(cache.k.as_ref().unwrap().dims()[2], 192);
+        let cached = Tensor::cat(parts, 1);
+        cached.into_data().assert_approx_eq::<f32>(&full.into_data(), Default::default());
+    }
 }
