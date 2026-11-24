@@ -1,0 +1,7 @@
+label,device,prompt,n,kv_cache,rep,prompt_tokens,new_tokens,ttft_ms,total_ms,decode_tok_s,total_tok_s,output_sha
+v3-bucket64-long,metal,0,900,true,1,6,900,56.8,12442.3,72.58,72.33,208432f975a6
+v3-bucket64-long,metal,0,900,true,2,6,900,123.4,12382.3,73.33,72.68,208432f975a6
+v3-bucket64-long,metal,0,900,true,3,6,900,51.0,12430.8,72.62,72.40,208432f975a6
+v3-bucket64-long,metal,1,900,true,1,13,900,115.9,12346.1,73.51,72.90,d82cb4cc63d3
+v3-bucket64-long,metal,1,900,true,2,13,900,51.1,12376.3,72.94,72.72,d82cb4cc63d3
+v3-bucket64-long,metal,1,900,true,3,13,900,136.2,12393.1,73.35,72.62,d82cb4cc63d3

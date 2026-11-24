@@ -101,3 +101,28 @@ so it was reverted.
 
 For reference, at 900 new tokens the cache gives 3.1–3.4x over no cache
 (21–23 vs 71 tok/s), since the uncached cost grows with sequence length.
+
+### 3.2 Bucketed fixed-shape cache (64 positions): kept, marginal gain
+
+The cache grows in blocks of 64 zero-padded positions; decode steps attend
+over the whole block with the causal mask hiding the padding, so kernel shapes
+stay fixed for 64 steps at a time. Prefill attends over the prompt directly
+(a first version that also padded during prefill added 50–100 ms to the time
+to first token: `results/v3-bucket64*.csv`).
+
+Compared against a fresh v1 run from the same session (`results/v1-rerun.csv`),
+total tok/s, median of 5 (900-token rows: median of 3, v1 from `v1-long.csv`):
+
+| new tokens | prompt | v1 | bucketed | TTFT v1 → bucketed (ms) | same output |
+|---|---|---|---|---|---|
+| 50  | 0 | 66.3 | 74.3 | 55 → 46 | yes |
+| 50  | 1 | 71.1 | 72.2 | 54 → 48 | yes |
+| 200 | 0 | 73.8 | 74.7 | 54 → 51 | yes |
+| 200 | 1 | 73.7 | 73.7 | 53 → 54 | yes |
+| 900 | 0 | 71.2 | 73.2 | 54 → 51 | yes |
+| 900 | 1 | 70.6 | 72.9 | 62 → 50 | yes |
+
+A 0–3% gain in most cases, never slower. This mostly rules out per-length
+kernel recompilation as the main cost: the decode step is bound by fixed
+per-kernel launch and synchronisation overhead. Memory cost is at most 63
+extra positions per layer.

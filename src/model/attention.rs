@@ -87,20 +87,56 @@ impl<B: Backend> CausalSelfAttention<B> {
     /// Output tensor `[batch, t_new, n_embd]`
     pub fn forward_cached(&self, x: Tensor<B, 3>, cache: &mut LayerKvCache<B>) -> Tensor<B, 3> {
         let (q, k_new, v_new) = self.project_qkv(x);
-        let past_len = cache.len();
+        let [batch, n_head, t_new, head_dim] = k_new.dims();
+        let past_len = cache.len;
+        let total = past_len + t_new;
 
-        // Append the new keys/values along the sequence dimension (dim 2).
-        let (k, v) = match (cache.k.take(), cache.v.take()) {
-            (Some(k_past), Some(v_past)) => (
-                Tensor::cat(vec![k_past, k_new], 2),
-                Tensor::cat(vec![v_past, v_new], 2),
-            ),
-            _ => (k_new, v_new),
+        // Prefill (empty cache): attend over the new tokens directly, then store
+        // them padded with zeros up to the bucket boundary.
+        if cache.k.is_none() {
+            let capacity = total.div_ceil(KV_BUCKET) * KV_BUCKET;
+            let pad = |t: Tensor<B, 4>| -> Tensor<B, 4> {
+                if capacity == total {
+                    return t;
+                }
+                let zeros = Tensor::zeros([batch, n_head, capacity - total, head_dim], &t.device());
+                Tensor::cat(vec![t, zeros], 2)
+            };
+            cache.k = Some(pad(k_new.clone()));
+            cache.v = Some(pad(v_new.clone()));
+            cache.len = total;
+            return self.attend(q, k_new, v_new, 0);
+        }
+
+        // Keep the cache padded to a multiple of KV_BUCKET positions so the
+        // attention kernels see the same shapes for many consecutive steps.
+        // Grow by appending zero rows when the next tokens don't fit.
+        let capacity = total.div_ceil(KV_BUCKET) * KV_BUCKET;
+        let grow = |buf: Option<Tensor<B, 4>>| -> Tensor<B, 4> {
+            let device = k_new.device();
+            match buf {
+                Some(buf) if buf.dims()[2] >= total => buf,
+                Some(buf) => {
+                    let extra = capacity - buf.dims()[2];
+                    let pad = Tensor::zeros([batch, n_head, extra, head_dim], &device);
+                    Tensor::cat(vec![buf, pad], 2)
+                }
+                None => Tensor::zeros([batch, n_head, capacity, head_dim], &device),
+            }
         };
-        cache.k = Some(k.clone());
-        cache.v = Some(v.clone());
+        let k_buf = grow(cache.k.take());
+        let v_buf = grow(cache.v.take());
 
-        self.attend(q, k, v, past_len)
+        let rows = [0..batch, 0..n_head, past_len..total, 0..head_dim];
+        let k_buf = k_buf.slice_assign(rows.clone(), k_new);
+        let v_buf = v_buf.slice_assign(rows, v_new);
+        cache.k = Some(k_buf.clone());
+        cache.v = Some(v_buf.clone());
+        cache.len = total;
+
+        // Attend over the whole padded buffer; the causal mask also hides the
+        // unused (zero) slots, since they lie after every query position.
+        self.attend(q, k_buf, v_buf, past_len)
     }
 
     /// Project `x` to Q, K, V in multi-head form `[B, n_head, T, head_dim]`.
@@ -147,9 +183,10 @@ impl<B: Backend> CausalSelfAttention<B> {
         let scale = (self.head_dim as f64).sqrt();
         let scores = q.matmul(k.transpose()) / scale;
 
-        // Causal mask: a query may not see keys from its future. With a single
-        // new query token every cached key is in its past, so no mask is needed.
-        let scores = if q_len > 1 {
+        // Causal mask: a query may not see keys from its future (including any
+        // padding past the last real position). Skip it when no key is in the
+        // future of any query, e.g. one new token over an unpadded cache.
+        let scores = if offset + q_len < k_len || q_len > 1 {
             let mask = self.causal_mask_offset(q_len, k_len, offset, &scores.device());
             scores + mask
         } else {
@@ -212,30 +249,36 @@ impl<B: Backend> CausalSelfAttention<B> {
     }
 }
 
+/// The KV cache grows in blocks of this many positions (see `forward_cached`).
+const KV_BUCKET: usize = 64;
+
 /// Cached keys and values for one attention layer.
 ///
-/// Both tensors have shape `[batch, n_head, cached_len, head_dim]`.
+/// Both tensors have shape `[batch, n_head, capacity, head_dim]`, where
+/// `capacity` is `len` rounded up to a multiple of [`KV_BUCKET`]. Only the
+/// first `len` positions hold real data; the rest are zeros.
 #[derive(Debug, Clone)]
 pub struct LayerKvCache<B: Backend> {
     k: Option<Tensor<B, 4>>,
     v: Option<Tensor<B, 4>>,
+    len: usize,
 }
 
 impl<B: Backend> Default for LayerKvCache<B> {
     fn default() -> Self {
-        Self { k: None, v: None }
+        Self { k: None, v: None, len: 0 }
     }
 }
 
 impl<B: Backend> LayerKvCache<B> {
     /// Number of cached sequence positions.
     pub fn len(&self) -> usize {
-        self.k.as_ref().map_or(0, |k| k.dims()[2])
+        self.len
     }
 
     /// `true` when nothing has been cached yet.
     pub fn is_empty(&self) -> bool {
-        self.k.is_none()
+        self.len == 0
     }
 }
 
