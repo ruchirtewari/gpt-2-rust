@@ -126,3 +126,34 @@ A 0–3% gain in most cases, never slower. This mostly rules out per-length
 kernel recompilation as the main cost: the decode step is bound by fixed
 per-kernel launch and synchronisation overhead. Memory cost is at most 63
 extra positions per layer.
+
+### 3.3 Half-precision (f16) cache storage: rejected
+
+K/V stored as f16 and cast back to f32 for attention, on top of 3.2
+(`results/v4-f16*.csv`; code in `experiments/f16-kv-cache.patch`).
+
+| new tokens | prompt | bucketed f32 | bucketed f16 | same output |
+|---|---|---|---|---|
+| 50  | 0 | 74.3 | 70.7 | yes |
+| 50  | 1 | 72.2 | 71.0 | yes |
+| 200 | 0 | 74.7 | 74.3 | yes |
+| 200 | 1 | 73.7 | 74.3 | yes |
+| 900 | 0 | 73.2 | 72.4 | yes |
+| 900 | 1 | 72.9 | 75.9 | yes |
+
+(total tok/s) No consistent change: GPT-2 small at batch size 1 is not limited
+by cache bandwidth, and the extra cast kernels offset the smaller reads. It also
+fails on the CPU (NdArray) backend, which has no f16 support. It would only pay
+off for much larger models, batches or contexts.
+
+## 4. Conclusions
+
+- The KV cache itself is the big win: 1.3–3.4x on Metal and up to 2.9x on the
+  CPU, growing with output length, with identical output.
+- Of the cache refinements, only bucketed fixed-shape attention helped, and only
+  slightly (0–3%).
+- The remaining decode cost (about 13 ms/token, ~74 tok/s) is per-kernel launch
+  and host synchronisation overhead, not cache work. Larger wins would come from
+  outside the cache: cheaper top-k selection on the host (about 7%, measured
+  above), on-device greedy argmax to avoid copying all 50,257 logits back each
+  step, and fewer/fused kernels per layer.

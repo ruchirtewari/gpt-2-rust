@@ -1,0 +1,67 @@
+diff --git a/src/model/attention.rs b/src/model/attention.rs
+index ec0da5d..6b3134a 100644
+--- a/src/model/attention.rs
++++ b/src/model/attention.rs
+@@ -7,7 +7,7 @@
+ use burn::{
+     nn::{Dropout, DropoutConfig, Linear, LinearConfig},
+     prelude::*,
+-    tensor::activation::softmax,
++    tensor::{activation::softmax, FloatDType},
+ };
+ 
+ use crate::config::Gpt2Config;
+@@ -102,8 +102,8 @@ impl<B: Backend> CausalSelfAttention<B> {
+                 let zeros = Tensor::zeros([batch, n_head, capacity - total, head_dim], &t.device());
+                 Tensor::cat(vec![t, zeros], 2)
+             };
+-            cache.k = Some(pad(k_new.clone()));
+-            cache.v = Some(pad(v_new.clone()));
++            cache.k = Some(pad(k_new.clone()).cast(KV_DTYPE));
++            cache.v = Some(pad(v_new.clone()).cast(KV_DTYPE));
+             cache.len = total;
+             return self.attend(q, k_new, v_new, 0);
+         }
+@@ -118,25 +118,27 @@ impl<B: Backend> CausalSelfAttention<B> {
+                 Some(buf) if buf.dims()[2] >= total => buf,
+                 Some(buf) => {
+                     let extra = capacity - buf.dims()[2];
+-                    let pad = Tensor::zeros([batch, n_head, extra, head_dim], &device);
++                    let pad = Tensor::<B, 4>::zeros([batch, n_head, extra, head_dim], &device)
++                        .cast(KV_DTYPE);
+                     Tensor::cat(vec![buf, pad], 2)
+                 }
+-                None => Tensor::zeros([batch, n_head, capacity, head_dim], &device),
++                None => Tensor::<B, 4>::zeros([batch, n_head, capacity, head_dim], &device)
++                    .cast(KV_DTYPE),
+             }
+         };
+         let k_buf = grow(cache.k.take());
+         let v_buf = grow(cache.v.take());
+ 
+         let rows = [0..batch, 0..n_head, past_len..total, 0..head_dim];
+-        let k_buf = k_buf.slice_assign(rows.clone(), k_new);
+-        let v_buf = v_buf.slice_assign(rows, v_new);
++        let k_buf = k_buf.slice_assign(rows.clone(), k_new.cast(KV_DTYPE));
++        let v_buf = v_buf.slice_assign(rows, v_new.cast(KV_DTYPE));
+         cache.k = Some(k_buf.clone());
+         cache.v = Some(v_buf.clone());
+         cache.len = total;
+ 
+         // Attend over the whole padded buffer; the causal mask also hides the
+         // unused (zero) slots, since they lie after every query position.
+-        self.attend(q, k_buf, v_buf, past_len)
++        self.attend(q, k_buf.cast(FloatDType::F32), v_buf.cast(FloatDType::F32), past_len)
+     }
+ 
+     /// Project `x` to Q, K, V in multi-head form `[B, n_head, T, head_dim]`.
+@@ -249,6 +251,9 @@ impl<B: Backend> CausalSelfAttention<B> {
+     }
+ }
+ 
++/// Storage precision of the KV cache.
++const KV_DTYPE: FloatDType = FloatDType::F16;
++
+ /// The KV cache grows in blocks of this many positions (see `forward_cached`).
+ const KV_BUCKET: usize = 64;
+ 

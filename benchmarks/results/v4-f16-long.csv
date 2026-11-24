@@ -1,0 +1,7 @@
+label,device,prompt,n,kv_cache,rep,prompt_tokens,new_tokens,ttft_ms,total_ms,decode_tok_s,total_tok_s,output_sha
+v4-f16-long,metal,0,900,true,1,6,900,52.5,12497.0,72.24,72.02,208432f975a6
+v4-f16-long,metal,0,900,true,2,6,900,48.3,12255.5,73.64,73.44,208432f975a6
+v4-f16-long,metal,0,900,true,3,6,900,48.4,12428.6,72.62,72.41,208432f975a6
+v4-f16-long,metal,1,900,true,1,13,900,44.7,12031.6,75.00,74.80,d82cb4cc63d3
+v4-f16-long,metal,1,900,true,2,13,900,43.9,11852.1,76.13,75.94,d82cb4cc63d3
+v4-f16-long,metal,1,900,true,3,13,900,42.4,11820.9,76.33,76.14,d82cb4cc63d3
