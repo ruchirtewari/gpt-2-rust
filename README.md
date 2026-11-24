@@ -29,7 +29,7 @@ Built using the [Burn deep-learning framework](https://burn.dev), it includes:
 - ✅ **Pure-Rust BPE Tokenizer:** Fast `tiktoken-rs` wrapper using GPT-2's vocabulary.
 - ✅ **Real-Time Word Streaming:** Outputs newly generated words instantly to the console.
 - ✅ **GPU Model Weight Offloading:** Automatically drops weights from GPU VRAM immediately after inference finishes.
-- ✅ **KV Cache:** Generation reuses cached attention keys/values, so each step processes only the newest token (about 3x faster for 200-token outputs; see `benchmarks/kv_cache.md`).
+- ✅ **KV Cache:** Generation reuses cached attention keys/values, so each step processes only the newest token (1.3–3.4x more tokens/second on Metal, growing with output length, with identical output; see `benchmarks/kv_cache.md`).
 - ✅ **Metal by Default:** GPU-accelerated on Apple Silicon through Burn's native Metal backend. CUDA is available with `--features cuda` on Windows and Linux.
 - ✅ **Single CLI Entry Point:** Reuses dependencies and compiles quickly into a single main executable.
 
