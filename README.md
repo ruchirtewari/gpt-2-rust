@@ -30,7 +30,7 @@ Built using the [Burn deep-learning framework](https://burn.dev), it includes:
 - ✅ **Real-Time Word Streaming:** Outputs newly generated words instantly to the console.
 - ✅ **GPU Model Weight Offloading:** Automatically drops weights from GPU VRAM immediately after inference finishes.
 - ✅ **KV Cache:** Generation reuses cached attention keys/values, so each step processes only the newest token (1.3–3.4x more tokens/second on Metal, growing with output length, with identical output; see `benchmarks/kv_cache.md`).
-- ✅ **Metal by Default:** GPU-accelerated on Apple Silicon through Burn's native Metal backend. CUDA is available with `--features cuda` on Windows and Linux.
+- ✅ **GPU by Default on Every Platform:** Burn's native Metal backend on macOS (Apple Silicon), the portable WGPU backend (Vulkan/DX12) on Linux and Windows. CUDA is available with `--features cuda`.
 - ✅ **Single CLI Entry Point:** Reuses dependencies and compiles quickly into a single main executable.
 
 ---
@@ -50,7 +50,7 @@ Built using the [Burn deep-learning framework](https://burn.dev), it includes:
 
 Everything compiles into a single, unified binary. Choose the operation mode using the flags.
 
-The default build enables the `metal` and `ndarray` (CPU) backends. On Windows or Linux, build with `--no-default-features --features cuda,ndarray` (or `wgpu,ndarray`).
+The default build enables the `wgpu` and `ndarray` (CPU) backends on every platform, plus `metal` on macOS. For NVIDIA GPUs, add `--features cuda`.
 
 ### 1. Download Model Parameters (`--download`)
 Downloads safetensors weights, model configurations, and vocabulary mapping for all variants from Hugging Face:
@@ -82,7 +82,7 @@ cargo run --release -- --generate --model weights/small/model.safetensors --prom
   * `--seed <N>`: Random seed for reproducibility.
   * `--kv-cache <true|false>`: Reuse cached attention keys/values between steps (default `true`).
   * `--stats`: Print timing statistics (time to first token, tokens/second) to stderr.
-  * `--device <metal|cuda|wgpu|cpu>`: Compute backend device (default is `metal`).
+  * `--device <metal|cuda|wgpu|cpu>`: Compute backend device (default is `metal` on macOS, `wgpu` elsewhere).
 
 ### 3. Evaluate Perplexity (`--evaluate`)
 Evaluates cross-entropy loss and perplexity on a test dataset:
@@ -95,7 +95,7 @@ cargo run --release -- --evaluate --model weights/small/model.safetensors --form
   * `--data <path>`: Path to validation dataset file.
   * `--seq-len <N>`: Sliding window sequence length.
   * `--batch-size <N>`: Evaluation batch size.
-  * `--device <metal|cuda|wgpu|cpu>`: Compute backend device (default is `metal`).
+  * `--device <metal|cuda|wgpu|cpu>`: Compute backend device (default is `metal` on macOS, `wgpu` elsewhere).
 
 ### 4. Pre-Train or Fine-Tune (`--train`)
 Performs pre-training or fine-tuning from scratch:
@@ -108,7 +108,7 @@ cargo run --release -- --train --data data/input.txt --artifact-dir artifacts/ -
   * `--epochs <N>`: Number of training epochs.
   * `--lr <F>`: AdamW peak learning rate.
   * `--dropout <F>`: Dropout probability.
-  * `--device <metal|cuda|wgpu|cpu>`: Compute backend device (default is `metal`).
+  * `--device <metal|cuda|wgpu|cpu>`: Compute backend device (default is `metal` on macOS, `wgpu` elsewhere).
 
 ---
 

@@ -36,6 +36,10 @@ clap = { version = "4", features = ["derive"] }
 
 rand = { version = "0.8", features = ["std_rng"] }
 
+# On macOS, always build Burn's native Metal backend (it does not compile elsewhere).
+[target.'cfg(target_os = "macos")'.dependencies]
+burn = { version = "~0.21", default-features = false, features = ["metal"] }
+
 [dev-dependencies]
 approx = "0.5"
 
@@ -45,9 +49,11 @@ lto           = false
 codegen-units = 16
 
 [features]
-default = ["metal", "ndarray"]
+# Cross-platform defaults; macOS additionally gets Metal (see above).
+default = ["wgpu", "ndarray"]
 cuda = ["burn/cuda"]
 wgpu = ["burn/wgpu"]
 # Native Metal (Apple GPU): kernels compiled straight to Metal Shading Language.
+# Enabled automatically on macOS; the feature is kept for explicit builds.
 metal = ["burn/metal"]
 ndarray = ["burn/ndarray"]

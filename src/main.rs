@@ -24,6 +24,9 @@ use gpt_2_rust::{
 };
 
 
+/// Metal on macOS; the portable WGPU backend (Vulkan/DX12) everywhere else.
+const DEFAULT_DEVICE: &str = if cfg!(target_os = "macos") { "metal" } else { "wgpu" };
+
 #[derive(Parser, Debug)]
 #[command(
     name    = "gpt2",
@@ -142,8 +145,9 @@ struct Args {
     #[arg(long, default_value = "42")]
     seed: u64,
 
-    /// Execution device / backend to run on: 'metal', 'cuda', 'wgpu', or 'cpu'.
-    #[arg(long, default_value = "metal")]
+    /// Execution device / backend to run on: 'metal', 'cuda', 'wgpu', or 'cpu'
+    /// (default: 'metal' on macOS, 'wgpu' elsewhere).
+    #[arg(long, default_value = DEFAULT_DEVICE)]
     device: String,
 }
 
@@ -365,12 +369,12 @@ fn run_generate(args: &Args) -> Result<()> {
             anyhow::bail!("CUDA backend is not enabled. Compile with --features cuda.");
         }
         "metal" => {
-            #[cfg(feature = "metal")]
+            #[cfg(any(feature = "metal", target_os = "macos"))]
             {
                 let device = burn::backend::wgpu::WgpuDevice::default();
                 run_generate_with_backend::<burn::backend::Metal<f32, i32>>(args, &device)?;
             }
-            #[cfg(not(feature = "metal"))]
+            #[cfg(not(any(feature = "metal", target_os = "macos")))]
             anyhow::bail!("Metal backend is not enabled. Compile with --features metal.");
         }
         "wgpu" => {
@@ -480,12 +484,12 @@ fn run_eval(args: &Args) -> Result<()> {
             anyhow::bail!("CUDA backend is not enabled. Compile with --features cuda.");
         }
         "metal" => {
-            #[cfg(feature = "metal")]
+            #[cfg(any(feature = "metal", target_os = "macos"))]
             {
                 let device = burn::backend::wgpu::WgpuDevice::default();
                 run_eval_with_backend::<burn::backend::Metal<f32, i32>>(args, &device)?;
             }
-            #[cfg(not(feature = "metal"))]
+            #[cfg(not(any(feature = "metal", target_os = "macos")))]
             anyhow::bail!("Metal backend is not enabled. Compile with --features metal.");
         }
         "wgpu" => {
@@ -552,12 +556,12 @@ fn run_train(args: &Args) -> Result<()> {
             anyhow::bail!("CUDA backend is not enabled. Compile with --features cuda.");
         }
         "metal" => {
-            #[cfg(feature = "metal")]
+            #[cfg(any(feature = "metal", target_os = "macos"))]
             {
                 let device = burn::backend::wgpu::WgpuDevice::default();
                 run_train_with_backend::<burn::backend::Autodiff<burn::backend::Metal<f32, i32>>>(args, &device)?;
             }
-            #[cfg(not(feature = "metal"))]
+            #[cfg(not(any(feature = "metal", target_os = "macos")))]
             anyhow::bail!("Metal backend is not enabled. Compile with --features metal.");
         }
         "wgpu" => {
